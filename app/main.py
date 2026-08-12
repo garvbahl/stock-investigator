@@ -6,6 +6,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .edgar import EdgarClient, TickerNotFound, EdgarError
 from .extract import CompanyData, assign_tier, extract_fields
+from .summarize import summarize, SummaryError
 
 USER_AGENT = os.environ.get("EDGAR_USER_AGENT", "")
 
@@ -20,8 +21,7 @@ def get_client() -> EdgarClient:
     return _client
 
 
-@app.get("/api/company/{ticker}")
-async def company(ticker: str):
+async def _fetch_company_data(ticker: str) -> CompanyData:
     try:
         client = get_client()
     except ValueError as e:
@@ -33,16 +33,37 @@ async def company(ticker: str):
     except EdgarError as e:
         raise HTTPException(status_code=502, detail=f"EDGAR error: {e}")
 
-    found, missing = extract_fields(facts)
-    data = CompanyData(
+    histories, margins, missing = extract_fields(facts)
+    return CompanyData(
         ticker=ticker.upper(),
         cik=str(facts.get("cik", "unknown")),
         entity_name=facts.get("entityName", "unknown"),
-        fields=found,
+        histories=histories,
+        margins=margins,
         unknown=missing,
-        tier=assign_tier(found, missing),
+        tier=assign_tier(histories, missing),
     )
+
+
+@app.get("/api/company/{ticker}")
+async def company(ticker: str):
+    data = await _fetch_company_data(ticker)
     return data.as_display()
+
+
+@app.get("/api/summary/{ticker}")
+async def summary(ticker: str):
+    data = await _fetch_company_data(ticker)
+    if data.tier == "blocked":
+        raise HTTPException(
+            status_code=422,
+            detail="Blocked: no verified data to summarize for this ticker.",
+        )
+    try:
+        result = summarize(data)
+    except SummaryError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return {"company": data.as_display(), "result": result.model_dump()}
 
 
 app.mount("/static", StaticFiles(directory="static"), name="static")

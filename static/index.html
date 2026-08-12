@@ -20,6 +20,12 @@
   .src { font-size: .75rem; opacity: .7; }
   .unknown { opacity: .65; font-style: italic; }
   .err { color: #b32424; }
+  .summary { margin-top: 24px; padding: 16px; border: 1px solid #8884; border-radius: 8px; }
+  .summary h3 { margin: 0 0 4px; font-size: 1.1rem; }
+  .summary .field { margin: 12px 0; }
+  .summary .label { font-weight: 600; font-size: .85rem; text-transform: uppercase; opacity: .7; }
+  .meta { font-size: .75rem; opacity: .7; margin-top: 12px; }
+  .disclaimer { font-size: .75rem; opacity: .6; margin-top: 8px; }
 </style>
 </head>
 <body>
@@ -28,6 +34,7 @@
 <div class="row">
   <input id="ticker" placeholder="e.g. AAPL" autocapitalize="characters" />
   <button id="go">Fetch</button>
+<button id="summarize">Summarize</button>
 </div>
 <div id="out"></div>
 
@@ -59,21 +66,74 @@ async function fetchCompany() {
 function render(d) {
   let html = `<h2>${d.entity_name} <span class="tier ${d.tier}">${d.tier}</span></h2>`;
   html += `<p class="src">Ticker ${d.ticker} &middot; CIK ${d.cik}</p>`;
-  html += `<table><thead><tr><th>Field</th><th>Value</th><th>Source</th></tr></thead><tbody>`;
-  for (const f of d.fields) {
-    const s = f.source;
-    html += `<tr><td>${f.name}</td><td>${money(f.value)}</td>` +
-      `<td class="src">${s.document} ${s.fiscal_year || ""} &middot; period ${s.period_end}<br>` +
-      `${s.xbrl_concept}<br>accession ${s.accession}</td></tr>`;
+    html += `<table><thead><tr><th>Field</th><th>By fiscal year</th><th>Source (latest)</th></tr></thead><tbody>`;
+    for (const h of d.histories) {
+        const latest = h.values[h.values.length - 1];
+        const s = latest.source;
+        const years = h.values.map(v => `FY${v.source.fiscal_year}: ${money(v.value)}`).join("<br>");
+        html += `<tr><td>${h.name}</td><td>${years}</td>` +
+            `<td class="src">${s.document} ${s.fiscal_year || ""}<br>${s.xbrl_concept}<br>accession ${s.accession}</td></tr>`;
   }
   for (const u of d.unknown) {
     html += `<tr class="unknown"><td>${u.name}</td><td>unknown</td><td class="src">${u.reason}</td></tr>`;
   }
   html += `</tbody></table>`;
+
+    if (d.margins && d.margins.length) {
+        html += `<h3 style="margin-top:20px;font-size:1rem;">Margins (computed in code, verifiable)</h3>`;
+        html += `<table><thead><tr><th>Margin</th><th>FY</th><th>Value</th><th>From</th></tr></thead><tbody>`;
+        for (const m of d.margins) {
+            html += `<tr><td>${m.name}</td><td>${m.fiscal_year}</td><td>${m.value_pct}%</td>` +
+                `<td class="src">${m.numerator} / ${m.denominator}<br>` +
+                `accn ${m.numerator_source.accession}</td></tr>`;
+        }
+        html += `</tbody></table>`;
+    }
   out.innerHTML = html;
 }
 
+    async function fetchSummary() {
+        const t = input.value.trim().toUpperCase();
+        if (!t) return;
+        out.innerHTML = "Fetching data and running summarizer... (this makes an LLM call, give it a few seconds)";
+        try {
+            const r = await fetch(`/api/summary/${encodeURIComponent(t)}`);
+            if (!r.ok) {
+                const e = await r.json();
+                out.innerHTML = `<p class="err">${e.detail || r.statusText}</p>`;
+                return;
+            }
+            const data = await r.json();
+            render(data.company);
+            renderSummary(data.result);
+        } catch (e) {
+            out.innerHTML = `<p class="err">${e.message}</p>`;
+        }
+    }
+
+    function renderSummary(res) {
+        const s = res.summary;
+        let html = `<div class="summary"><h3>Summary</h3>`;
+        html += field("Overview", s.overview);
+        html += field("Revenue trend", s.revenue_trend);
+        html += field("Margin trend", s.margin_trend);
+        html += `<div class="field"><div class="label">Risks</div><ul>` +
+            s.risks.map(r => `<li>${r}</li>`).join("") + `</ul></div>`;
+        html += `<div class="field"><div class="label">Sources</div><div class="src">` +
+            s.sources.join(", ") + `</div></div>`;
+        html += `<div class="meta">Model ${res.model} &middot; ${res.input_tokens} in / ${res.output_tokens} out tokens ` +
+            `&middot; $${res.cost_usd.toFixed(6)} &middot; ${res.attempts} attempt(s)</div>`;
+        html += `<div class="disclaimer">This is a data summary, not investment advice.</div>`;
+        html += `</div>`;
+        out.insertAdjacentHTML("beforeend", html);
+    }
+
+    function field(label, value) {
+        return `<div class="field"><div class="label">${label}</div><div>${value}</div></div>`;
+    }
+
 document.getElementById("go").addEventListener("click", fetchCompany);
+    document.getElementById("summarize").addEventListener("click", fetchSummary);
 input.addEventListener("keydown", e => { if (e.key === "Enter") fetchCompany(); });
 </script>
 </body>
