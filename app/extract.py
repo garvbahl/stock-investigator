@@ -48,6 +48,20 @@ class DerivedMargin(BaseModel):
     denominator_source: SourceRef
 
 
+class DerivedChange(BaseModel):
+    """Year-over-year change for one field, computed in code from two verified
+    values. Both source references are carried so the number is reproducible."""
+    name: str            # field name, e.g. "revenue"
+    from_year: int
+    to_year: int
+    from_value: float
+    to_value: float
+    abs_change: float    # to_value - from_value
+    pct_change: float    # percent change, rounded
+    from_source: SourceRef
+    to_source: SourceRef
+
+
 class UnknownField(BaseModel):
     """A field we looked for and did not find. It stays unknown end to end."""
     name: str
@@ -63,6 +77,7 @@ class CompanyData(BaseModel):
     entity_name: str
     histories: list[FieldHistory]
     margins: list[DerivedMargin]
+    changes: list[DerivedChange]
     unknown: list[UnknownField]
     tier: Tier
 
@@ -73,6 +88,7 @@ class CompanyData(BaseModel):
 CONCEPT_MAP: dict[str, list[str]] = {
     "revenue": [
         "RevenueFromContractWithCustomerExcludingAssessedTax",
+        "RevenueFromContractWithCustomerIncludingAssessedTax",
         "Revenues",
         "SalesRevenueNet",
     ],
@@ -150,7 +166,7 @@ def _to_verified(name: str, fact: dict, concept: str) -> VerifiedField:
 
 def extract_fields(
     facts: dict,
-) -> tuple[list[FieldHistory], list[DerivedMargin], list[UnknownField]]:
+) -> tuple[list[FieldHistory], list[DerivedMargin], list[DerivedChange], list[UnknownField]]:
     entity_facts = facts.get("facts", {}).get("us-gaap", {})
     histories: list[FieldHistory] = []
     missing: list[UnknownField] = []
@@ -158,22 +174,31 @@ def extract_fields(
     by_year_field: dict[int, dict[str, VerifiedField]] = {}
 
     for name, concepts in CONCEPT_MAP.items():
-        picked_facts: list[dict] = []
-        used_concept = ""
+        # A company can change which XBRL tag it uses for the same line item
+        # over time (e.g. a new revenue concept in later filings). So we merge
+        # facts from ALL candidate concepts, keyed by period-end year, keeping
+        # the most recently filed value for each year. Each value still records
+        # which concept it came from, so provenance is preserved.
+        merged: dict[int, tuple[dict, str]] = {}  # year -> (fact, concept)
         for concept in concepts:
             block = entity_facts.get(concept)
             if not block:
                 continue
-            picked_facts = _annual_facts(block)
-            if picked_facts:
-                used_concept = concept
-                break
-        if not picked_facts:
+            for fact in _annual_facts(block):
+                py = _period_year(fact)
+                if py is None:
+                    continue
+                existing = merged.get(py)
+                if existing is None or fact.get("filed", "") > existing[0].get("filed", ""):
+                    merged[py] = (fact, concept)
+        if not merged:
             missing.append(UnknownField(name=name))
             continue
 
-        recent = picked_facts[-MAX_YEARS:]
-        verified = [_to_verified(name, f, used_concept) for f in recent]
+        ordered_years = sorted(merged)[-MAX_YEARS:]
+        verified = [
+            _to_verified(name, merged[y][0], merged[y][1]) for y in ordered_years
+        ]
         histories.append(FieldHistory(name=name, values=verified))
         for vf in verified:
             fy = vf.source.fiscal_year
@@ -181,7 +206,36 @@ def extract_fields(
                 by_year_field.setdefault(fy, {})[name] = vf
 
     margins = _compute_margins(by_year_field)
-    return histories, margins, missing
+    changes = _compute_changes(histories)
+    return histories, margins, changes, missing
+
+
+def _compute_changes(histories: list[FieldHistory]) -> list[DerivedChange]:
+    """Year-over-year change per field, between each consecutive pair of years."""
+    out: list[DerivedChange] = []
+    for h in histories:
+        vals = h.values  # already oldest-first
+        for prev, curr in zip(vals, vals[1:]):
+            if prev.value == 0:
+                continue
+            fy_from = prev.source.fiscal_year
+            fy_to = curr.source.fiscal_year
+            if fy_from is None or fy_to is None:
+                continue
+            out.append(
+                DerivedChange(
+                    name=h.name,
+                    from_year=fy_from,
+                    to_year=fy_to,
+                    from_value=prev.value,
+                    to_value=curr.value,
+                    abs_change=curr.value - prev.value,
+                    pct_change=round((curr.value - prev.value) / prev.value * 100, 2),
+                    from_source=prev.source,
+                    to_source=curr.source,
+                )
+            )
+    return out
 
 
 def _compute_margins(

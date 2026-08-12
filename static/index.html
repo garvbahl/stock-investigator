@@ -6,7 +6,16 @@
 <title>Investment Research - Stage 1</title>
 <style>
   :root { color-scheme: light dark; }
-  body { font-family: system-ui, sans-serif; max-width: 760px; margin: 40px auto; padding: 0 16px; }
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 0; }
+  #layout { display: flex; gap: 24px; max-width: 1100px; margin: 0 auto; padding: 24px 16px; align-items: flex-start; }
+  #main-col { flex: 1; min-width: 0; }
+  #runs-panel { width: 260px; flex-shrink: 0; border-left: 1px solid #8883; padding-left: 16px; position: sticky; top: 24px; }
+  #runs-panel h2 { font-size: 1rem; margin-top: 0; }
+  .run-item { padding: 8px; border: 1px solid #8883; border-radius: 6px; margin-bottom: 8px; cursor: pointer; font-size: .82rem; }
+  .run-item:hover { background: #8881; }
+  .run-item .rt { font-weight: 600; }
+  .run-item .rmeta { opacity: .7; font-size: .75rem; margin-top: 2px; }
+  @media (max-width: 800px) { #layout { flex-direction: column; } #runs-panel { width: auto; border-left: none; border-top: 1px solid #8883; padding-left: 0; padding-top: 16px; position: static; } }
   h1 { font-size: 1.4rem; }
   .row { display: flex; gap: 8px; margin: 16px 0; }
   input { flex: 1; padding: 10px; font-size: 1rem; }
@@ -26,17 +35,51 @@
   .summary .label { font-weight: 600; font-size: .85rem; text-transform: uppercase; opacity: .7; }
   .meta { font-size: .75rem; opacity: .7; margin-top: 12px; }
   .disclaimer { font-size: .75rem; opacity: .6; margin-top: 8px; }
+  .debate { margin-top: 24px; }
+  .case { border: 1px solid #8884; border-radius: 8px; padding: 14px; margin: 12px 0; }
+  .bull { border-left: 4px solid #1a7f37; }
+  .bear { border-left: 4px solid #b32424; }
+  .ref { border-left: 4px solid #6639ba; }
+  .case h3 { margin: 0 0 6px; font-size: 1rem; }
+  .thesis { font-style: italic; margin-bottom: 8px; }
+  .claim { margin: 8px 0; padding-left: 10px; border-left: 2px solid #8883; }
+  .claim .accn { font-size: .72rem; opacity: .6; }
+  .disagree { margin: 10px 0; padding: 8px; background: #6639ba14; border-radius: 6px; }
+  .disagree .topic { font-weight: 600; }
+  .resolve { font-size: .85rem; margin-top: 4px; }
+  .plain { background: #2b8a3e14; border-radius: 4px; padding: 4px 8px; margin: 4px 0; font-size: .9rem; }
+  .trace { margin: 20px 0; padding: 14px; border: 1px solid #8884; border-radius: 8px; }
+  .trace h2 { font-size: 1rem; margin: 0 0 10px; }
+  .tstep { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-left: 3px solid #8884; padding-left: 12px; margin-left: 6px; position: relative; }
+  .tstep::before { content: ""; position: absolute; left: -7px; top: 12px; width: 11px; height: 11px; border-radius: 50%; background: #888; }
+  .tstep.ok::before { background: #1a7f37; }
+  .tstep.warn::before { background: #9a6700; }
+  .tstep.stop::before { background: #b32424; }
+  .tstep .tk { font-size: .68rem; text-transform: uppercase; letter-spacing: .04em; opacity: .55; }
+  .tstep .tl { font-weight: 600; font-size: .9rem; }
+  .tstep .td { font-size: .85rem; opacity: .85; }
+  .tstep .tm { font-size: .72rem; opacity: .6; margin-top: 2px; }
+  .tstep .reads { font-size: .72rem; color: #6639ba; }
 </style>
 </head>
 <body>
+<div id="layout">
+    <main id="main-col">
 <h1>Verified Company Data (EDGAR)</h1>
 <p class="src">Type a US-listed ticker. Numbers come from the company's XBRL filings and show their source. Fields not found stay marked unknown.</p>
 <div class="row">
   <input id="ticker" placeholder="e.g. AAPL" autocapitalize="characters" />
   <button id="go">Fetch</button>
 <button id="summarize">Summarize</button>
+<button id="debate">Debate</button>
 </div>
 <div id="out"></div>
+</main>
+<aside id="runs-panel">
+    <h2>Past runs</h2>
+    <div id="runs-list">Loading...</div>
+</aside>
+</div>
 
 <script>
 const out = document.getElementById("out");
@@ -89,6 +132,18 @@ function render(d) {
         }
         html += `</tbody></table>`;
     }
+
+    if (d.changes && d.changes.length) {
+        html += `<h3 style="margin-top:20px;font-size:1rem;">Year-over-year change (computed in code, verifiable)</h3>`;
+        html += `<table><thead><tr><th>Field</th><th>Years</th><th>Change</th><th>Source</th></tr></thead><tbody>`;
+        for (const c of d.changes) {
+            const sign = c.abs_change >= 0 ? "+" : "";
+            html += `<tr><td>${c.name}</td><td>FY${c.from_year} &rarr; FY${c.to_year}</td>` +
+                `<td>${sign}${c.pct_change}%<br><span class="src">${sign}${money(c.abs_change)}</span></td>` +
+                `<td class="src">accn ${c.to_source.accession}</td></tr>`;
+        }
+        html += `</tbody></table>`;
+    }
   out.innerHTML = html;
 }
 
@@ -106,10 +161,11 @@ function render(d) {
             const data = await r.json();
             render(data.company);
             renderSummary(data.result);
-        } catch (e) {
-            out.innerHTML = `<p class="err">${e.message}</p>`;
-        }
+      loadRuns();
+    } catch (e) {
+        out.innerHTML = `<p class="err">${e.message}</p>`;
     }
+}
 
     function renderSummary(res) {
         const s = res.summary;
@@ -132,9 +188,127 @@ function render(d) {
         return `<div class="field"><div class="label">${label}</div><div>${value}</div></div>`;
     }
 
+    async function fetchDebate() {
+        const t = input.value.trim().toUpperCase();
+        if (!t) return;
+        out.innerHTML = "Fetching data and running the bull/bear/referee debate... (three LLM calls, give it 10-20 seconds)";
+        try {
+            const r = await fetch(`/api/debate/${encodeURIComponent(t)}`);
+            if (!r.ok) {
+                const e = await r.json();
+                out.innerHTML = `<p class="err">${e.detail || r.statusText}</p>`;
+                return;
+            }
+            const data = await r.json();
+            render(data.company);
+            renderDebate(data.debate);
+            renderTrace(data.trace);
+            loadRuns();
+        } catch (e) {
+            out.innerHTML = `<p class="err">${e.message}</p>`;
+        }
+    }
+
+    function renderSide(cls, title, side) {
+        let html = `<div class="case ${cls}"><h3>${title}</h3>`;
+        html += `<div class="thesis">${side.thesis}</div>`;
+        if (side.plain_summary) html += `<div class="plain">In plain terms: ${side.plain_summary}</div>`;
+        for (const c of side.claims) {
+            html += `<div class="claim">${c.point}`;
+            if (c.plain_language) html += `<div class="plain">${c.plain_language}</div>`;
+            if (c.figures && c.figures.length) html += `<span class="src">${c.figures.join("; ")}</span>`;
+            if (c.accessions && c.accessions.length) html += `<br><span class="accn">accession ${c.accessions.join(", ")}</span>`;
+            html += `</div>`;
+        }
+        html += `</div>`;
+        return html;
+    }
+
+    function renderDebate(d) {
+        let html = `<div class="debate"><h2>Debate</h2>`;
+        html += renderSide("bull", "Bull case", d.bull);
+        html += renderSide("bear", "Bear case", d.bear);
+        html += `<div class="case ref"><h3>Referee: where they disagree</h3>`;
+        for (const dis of d.referee.disagreements) {
+            html += `<div class="disagree"><div class="topic">${dis.topic}</div>`;
+            if (dis.plain_language) html += `<div class="plain">${dis.plain_language}</div>`;
+            html += `<div><strong>Bull:</strong> ${dis.bull_view}</div>` +
+                `<div><strong>Bear:</strong> ${dis.bear_view}</div>` +
+                `<div class="resolve"><strong>What would settle it:</strong> ${dis.resolving_data}</div></div>`;
+        }
+        html += `<div class="field"><div class="label">What cannot be known from this data</div><ul>` +
+            d.referee.what_cannot_be_known.map(x => `<li>${x}</li>`).join("") + `</ul></div>`;
+        html += `</div>`;
+        const totalTok = d.total_tokens;
+        html += `<div class="meta">3 agents &middot; ${totalTok} total tokens &middot; $${d.total_cost_usd.toFixed(6)}</div>`;
+        html += `<div class="disclaimer">This surfaces both sides and open questions. It is not investment advice and names no verdict.</div>`;
+        html += `</div>`;
+        out.insertAdjacentHTML("beforeend", html);
+    }
+
+    async function loadRuns() {
+        try {
+            const r = await fetch("/api/runs");
+            const data = await r.json();
+            const list = document.getElementById("runs-list");
+            if (!data.runs.length) { list.innerHTML = `<p class="src">No runs yet. Run a Summarize or Debate.</p>`; return; }
+            list.innerHTML = data.runs.map(run => {
+                const when = new Date(run.created_at * 1000).toLocaleString();
+                return `<div class="run-item" data-id="${run.id}">` +
+                    `<div class="rt">${run.ticker} <span class="tier ${run.tier}">${run.kind}</span></div>` +
+                    `<div class="rmeta">${when} &middot; $${run.cost_usd.toFixed(4)} &middot; ${run.total_tokens} tok</div></div>`;
+            }).join("");
+            list.querySelectorAll(".run-item").forEach(el =>
+                el.addEventListener("click", () => replayRun(el.dataset.id)));
+        } catch (e) {
+            document.getElementById("runs-list").innerHTML = `<p class="err">${e.message}</p>`;
+        }
+    }
+
+    async function replayRun(id) {
+        out.innerHTML = "Loading saved run...";
+        try {
+            const r = await fetch(`/api/runs/${id}`);
+            if (!r.ok) { out.innerHTML = `<p class="err">Run not found</p>`; return; }
+            const run = await r.json();
+            const p = run.payload;
+            render(p.company);
+            if (run.kind === "summary") renderSummary(p.result);
+            else if (run.kind === "debate") { renderDebate(p.debate); renderTrace(p.trace); }
+        } catch (e) {
+            out.innerHTML = `<p class="err">${e.message}</p>`;
+        }
+    }
+
+    function renderTrace(trace) {
+        if (!trace || !trace.steps || !trace.steps.length) return;
+        const kindLabel = { tool: "tool call", verify: "verification", decision: "orchestration", agent: "agent" };
+        let html = `<div class="trace"><h2>Pipeline trace &mdash; how this run was produced</h2>`;
+        for (const s of trace.steps) {
+            html += `<div class="tstep ${s.status}"><div style="flex:1">`;
+            html += `<div class="tk">${kindLabel[s.kind] || s.kind}</div>`;
+            html += `<div class="tl">${s.label}</div>`;
+            html += `<div class="td">${s.detail}</div>`;
+            const bits = [];
+            if (s.tier) bits.push(`tier: ${s.tier}`);
+            if (s.facts_verified != null) bits.push(`${s.facts_verified} figures verified`);
+            if (s.model) bits.push(s.model);
+            if (s.input_tokens != null) bits.push(`${s.input_tokens}+${s.output_tokens} tok`);
+            if (s.cost_usd != null) bits.push(`$${s.cost_usd.toFixed(5)}`);
+            if (s.attempts != null) bits.push(`${s.attempts} attempt${s.attempts > 1 ? "s" : ""}`);
+            if (bits.length) html += `<div class="tm">${bits.join(" · ")}</div>`;
+            if (s.reads && s.reads.length) html += `<div class="reads">&#8627; reads: ${s.reads.join(", ")}</div>`;
+            html += `</div></div>`;
+        }
+        html += `<div class="meta">${trace.steps.length} steps</div></div>`;
+        out.insertAdjacentHTML("beforeend", html);
+    }
+
 document.getElementById("go").addEventListener("click", fetchCompany);
     document.getElementById("summarize").addEventListener("click", fetchSummary);
+    document.getElementById("debate").addEventListener("click", fetchDebate);
 input.addEventListener("keydown", e => { if (e.key === "Enter") fetchCompany(); });
+    loadRuns();
 </script>
 </body>
 </html>

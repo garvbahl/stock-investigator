@@ -1,10 +1,7 @@
-import json
+from pydantic import BaseModel
 
-from anthropic import Anthropic
-from pydantic import BaseModel, ValidationError
-
-from .config import ANTHROPIC_API_KEY, SUMMARY_MODEL, cost_usd
 from .extract import CompanyData
+from .llm import LLMError, call_json, format_data_block
 
 
 class Summary(BaseModel):
@@ -52,94 +49,24 @@ SYSTEM = (
 )
 
 
-def _build_user_prompt(data: CompanyData) -> str:
-    lines = [f"Company: {data.entity_name} (ticker {data.ticker}, CIK {data.cik})"]
-    lines.append(f"Verification tier: {data.tier}")
-    lines.append("")
-    lines.append("Verified figures by fiscal year (oldest to newest):")
-    for h in data.histories:
-        lines.append(f"  {h.name}:")
-        for vf in h.values:
-            s = vf.source
-            lines.append(
-                f"    FY{s.fiscal_year}: {vf.value:,.0f} {vf.unit} "
-                f"[{s.document}, period ending {s.period_end}, accession {s.accession}]"
-            )
-    if data.margins:
-        lines.append("")
-        lines.append("Margins already computed for you (do not recompute):")
-        for m in data.margins:
-            lines.append(
-                f"  FY{m.fiscal_year} {m.name}: {m.value_pct}% "
-                f"(= {m.numerator} / {m.denominator})"
-            )
-    if data.unknown:
-        lines.append("")
-        lines.append("Unknown (not found, do not reference):")
-        for u in data.unknown:
-            lines.append(f"  - {u.name}")
-    return "\n".join(lines)
-
-
-def _strip_fences(text: str) -> str:
-    t = text.strip()
-    if t.startswith("```"):
-        t = t.split("\n", 1)[-1] if "\n" in t else t
-        if t.endswith("```"):
-            t = t[: -3]
-        if t.startswith("json"):
-            t = t[4:]
-    return t.strip()
-
-
 def summarize(data: CompanyData, max_attempts: int = 3) -> SummaryResult:
-    if not ANTHROPIC_API_KEY:
-        raise SummaryError("ANTHROPIC_API_KEY is not set. Add it to your .env file.")
     if not data.histories:
         raise SummaryError("No verified fields to summarize (tier is blocked).")
-
-    client = Anthropic(api_key=ANTHROPIC_API_KEY)
-    user_prompt = _build_user_prompt(data)
-    messages = [{"role": "user", "content": user_prompt}]
-    last_error = ""
-
-    for attempt in range(1, max_attempts + 1):
-        resp = client.messages.create(
-            model=SUMMARY_MODEL,
-            max_tokens=1024,
+    user_prompt = format_data_block(data)
+    try:
+        summary, meta = call_json(
             system=SYSTEM,
-            messages=messages,
+            user_prompt=user_prompt,
+            schema=Summary,
+            max_attempts=max_attempts,
         )
-        raw = "".join(b.text for b in resp.content if b.type == "text")
-        cleaned = _strip_fences(raw)
-        try:
-            parsed = json.loads(cleaned)
-            summary = Summary.model_validate(parsed)
-            return SummaryResult(
-                summary=summary,
-                model=SUMMARY_MODEL,
-                input_tokens=resp.usage.input_tokens,
-                output_tokens=resp.usage.output_tokens,
-                cost_usd=cost_usd(
-                    SUMMARY_MODEL, resp.usage.input_tokens, resp.usage.output_tokens
-                ),
-                attempts=attempt,
-            )
-        except (json.JSONDecodeError, ValidationError) as e:
-            last_error = str(e)
-            messages.append({"role": "assistant", "content": raw})
-            messages.append(
-                {
-                    "role": "user",
-                    "content": (
-                        f"That was not valid. Error: {last_error}\n"
-                        "Return ONLY the JSON object with the required keys, "
-                        "nothing else."
-                    ),
-                }
-            )
-
-    raise SummaryError(
-        f"Model did not return valid JSON after {max_attempts} attempts. "
-        f"Last error: {last_error}"
+    except LLMError as e:
+        raise SummaryError(str(e))
+    return SummaryResult(
+        summary=summary,
+        model=meta.model,
+        input_tokens=meta.input_tokens,
+        output_tokens=meta.output_tokens,
+        cost_usd=meta.cost_usd,
+        attempts=meta.attempts,
     )
