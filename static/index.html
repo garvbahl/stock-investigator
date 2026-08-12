@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Investment Research - Stage 1</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; max-width: 760px; margin: 40px auto; padding: 0 16px; }
+  h1 { font-size: 1.4rem; }
+  .row { display: flex; gap: 8px; margin: 16px 0; }
+  input { flex: 1; padding: 10px; font-size: 1rem; }
+  button { padding: 10px 18px; font-size: 1rem; cursor: pointer; }
+  .tier { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: .8rem; font-weight: 600; }
+  .confident { background: #1a7f37; color: #fff; }
+  .partial { background: #9a6700; color: #fff; }
+  .blocked { background: #b32424; color: #fff; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+  th, td { text-align: left; padding: 8px; border-bottom: 1px solid #8884; font-size: .9rem; }
+  .src { font-size: .75rem; opacity: .7; }
+  .unknown { opacity: .65; font-style: italic; }
+  .err { color: #b32424; }
+</style>
+</head>
+<body>
+<h1>Verified Company Data (EDGAR)</h1>
+<p class="src">Type a US-listed ticker. Numbers come from the company's XBRL filings and show their source. Fields not found stay marked unknown.</p>
+<div class="row">
+  <input id="ticker" placeholder="e.g. AAPL" autocapitalize="characters" />
+  <button id="go">Fetch</button>
+</div>
+<div id="out"></div>
+
+<script>
+const out = document.getElementById("out");
+const input = document.getElementById("ticker");
+
+function money(v) {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(v);
+}
+
+async function fetchCompany() {
+  const t = input.value.trim().toUpperCase();
+  if (!t) return;
+  out.innerHTML = "Loading...";
+  try {
+    const r = await fetch(`/api/company/${encodeURIComponent(t)}`);
+    if (!r.ok) {
+      const e = await r.json();
+      out.innerHTML = `<p class="err">${e.detail || r.statusText}</p>`;
+      return;
+    }
+    render(await r.json());
+  } catch (e) {
+    out.innerHTML = `<p class="err">${e.message}</p>`;
+  }
+}
+
+function render(d) {
+  let html = `<h2>${d.entity_name} <span class="tier ${d.tier}">${d.tier}</span></h2>`;
+  html += `<p class="src">Ticker ${d.ticker} &middot; CIK ${d.cik}</p>`;
+  html += `<table><thead><tr><th>Field</th><th>Value</th><th>Source</th></tr></thead><tbody>`;
+  for (const f of d.fields) {
+    const s = f.source;
+    html += `<tr><td>${f.name}</td><td>${money(f.value)}</td>` +
+      `<td class="src">${s.document} ${s.fiscal_year || ""} &middot; period ${s.period_end}<br>` +
+      `${s.xbrl_concept}<br>accession ${s.accession}</td></tr>`;
+  }
+  for (const u of d.unknown) {
+    html += `<tr class="unknown"><td>${u.name}</td><td>unknown</td><td class="src">${u.reason}</td></tr>`;
+  }
+  html += `</tbody></table>`;
+  out.innerHTML = html;
+}
+
+document.getElementById("go").addEventListener("click", fetchCompany);
+input.addEventListener("keydown", e => { if (e.key === "Enter") fetchCompany(); });
+</script>
+</body>
+</html>
